@@ -56,13 +56,9 @@
             go
             gopls
             gotools
-            darwin.apple_sdk.frameworks.CoreFoundation
-            darwin.apple_sdk.frameworks.Foundation
-            darwin.apple_sdk.frameworks.LocalAuthentication
           ];
           shellHook = ''
             unset GOPATH GOROOT
-            export NIX_LDFLAGS="-F${pkgs.darwin.apple_sdk.frameworks.CoreFoundation}/Library/Frameworks -framework CoreFoundation $NIX_LDFLAGS"
           '';
         };
       }

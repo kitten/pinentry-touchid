@@ -167,9 +167,16 @@ func passwordFromKeychain(label string) (string, error) {
 	return string(results[0].Data), nil
 }
 
-// storePasswordInKeychain saves a password/pin in the keychain with the given label
-// and keyInfo
-func storePasswordInKeychain(label, keyInfo string, pin []byte) error {
+// storePasswordInKeychain saves a password/pin in the keychain with the
+// given label and keyInfo.
+//
+// Note: macOS requires codesign + keychain-access-groups entitlement to
+// create items with a biometric SecAccessControl (kSecAccessControlBiometryAny).
+// nix-built binaries are not codesigned, so we fall back to a regular
+// keychain item and gate access via an explicit LAContext call (authFn)
+// in GetPIN. Biometric ACL support would require a codesign step in the
+// nix build with an entitlements plist.
+func storePasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logger) error {
 	item := keychain.NewItem()
 	item.SetSecClass(keychain.SecClassGenericPassword)
 	item.SetService("GnuPG")
@@ -179,11 +186,16 @@ func storePasswordInKeychain(label, keyInfo string, pin []byte) error {
 	item.SetSynchronizable(keychain.SynchronizableNo)
 	item.SetAccessible(keychain.AccessibleWhenUnlocked)
 
-	if err := keychain.AddItem(item); err != nil {
-		return err
+	err := keychain.AddItem(item)
+	if err == keychain.ErrorDuplicateItem {
+		// Old entry blocks insertion — drop it and retry.
+		logger.Printf("Existing entry blocks insertion, deleting and retrying")
+		if delErr := deleteKeychainItem("GnuPG", keyInfo); delErr != nil {
+			return fmt.Errorf("deleting existing entry: %w", delErr)
+		}
+		err = keychain.AddItem(item)
 	}
-
-	return nil
+	return err
 }
 
 // passwordPrompt uses the default pinentry-mac program for getting the password from the user
@@ -340,59 +352,43 @@ func GetPIN(authFn AuthFunc, promptFn PromptFunc, logger *log.Logger) GetPinFunc
 			// https://gist.github.com/mdeguzis/05d1f284f931223624834788da045c65#file-info-pinentry-L357-L362
 			keyInfo := strings.Split(s.KeyInfo, "/")[1]
 
-			// pinentry-mac can create an item in the keychain, if that was the case, the user will have
-			// to authorize our app to access the item without asking for a password from the user. If
-			// not, we create an entry in the keychain, which automatically gives us ownership (i.e the
-			// user will not be asked for a password). In either case, the access to the item will be
-			// guarded by Touch ID.
-			exists, err = checkEntryInKeychain(keychainLabel)
-			if err != nil {
-				logger.Printf("error checking entry in keychain: %s", err)
+			// pinentry-mac may have stored the entry itself if the user
+			// left "Save in keychain" checked. We delete and replace so
+			// the entry is owned by us; the entry remains non-biometric
+			// (see note in storePasswordInKeychain).
+			if err := storePasswordInKeychain(keychainLabel, keyInfo, pin, logger); err != nil {
+				logger.Printf("Error storing password in keychain: %s", err)
 				return "", assuanError(err)
-			}
-
-			if !exists {
-				// pinentry-mac didn't create a new entry in the keychain, we create our own and take
-				// ownership over the entry.
-				err = storePasswordInKeychain(keychainLabel, keyInfo, pin)
-
-				if err == keychain.ErrorDuplicateItem {
-					logger.Printf("Keychain entry already exists, will need permission on next access")
-					// Don't treat duplicate as fatal - the entry exists, we just need permission
-				} else if err != nil {
-					logger.Printf("Error storing password in keychain: %s", err)
-					return "", assuanError(err)
-				}
-			} else {
-				logger.Printf("The keychain entry was created by pinentry-mac. Permission will be required on next run.")
 			}
 
 			return string(pin), nil
 		}
 
-		// Entry exists — go straight to Touch ID, then fetch.
-		// (An "ensure access" prequery would trigger a *second* keychain
-		// Allow/Always-Allow prompt; passwordFromKeychain already exercises
-		// the same ACL.)
-		var ok bool
+		// Entry exists — gate access on a fresh Touch ID via LAContext,
+		// then fetch from keychain. The keychain item itself has no
+		// biometric ACL (see storePasswordInKeychain), so authFn is the
+		// actual security check.
 		authStart := time.Now()
 		logger.Printf("Calling Touch ID authFn (reason=%q)", fmt.Sprintf("access the PIN for %s", keychainLabel))
-		if ok, err = authFn(fmt.Sprintf("access the PIN for %s", keychainLabel)); err != nil {
+		ok, err := authFn(fmt.Sprintf("access the PIN for %s", keychainLabel))
+		if err != nil {
 			logger.Printf("Touch ID authFn returned error after %s: %s", time.Since(authStart), err)
 			return "", assuanError(err)
 		}
 		logger.Printf("Touch ID authFn returned ok=%v after %s", ok, time.Since(authStart))
 
 		if !ok {
-			logger.Printf("Failed to authenticate")
+			logger.Printf("Touch ID authentication failed")
 			return "", nil
 		}
 
+		fetchStart := time.Now()
 		password, err := passwordFromKeychain(keychainLabel)
 		if err != nil {
-			logger.Printf("Error fetching password from Keychain: %s", err)
+			logger.Printf("Error fetching password from Keychain after %s: %s", time.Since(fetchStart), err)
 			return "", assuanError(err)
 		}
+		logger.Printf("Password fetched from keychain after %s", time.Since(fetchStart))
 
 		return password, nil
 	}
