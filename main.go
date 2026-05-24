@@ -93,32 +93,6 @@ func checkEntryInKeychain(label string) (bool, error) {
 	return len(results) == 1, nil
 }
 
-// ensureKeychainAccess attempts to access the keychain entry to trigger the macOS permission
-// dialog if needed. It doesn't return the actual password data.
-func ensureKeychainAccess(label string, logger *log.Logger) error {
-	query := keychain.NewItem()
-	query.SetSecClass(keychain.SecClassGenericPassword)
-	query.SetLabel(label)
-	query.SetMatchLimit(keychain.MatchLimitOne)
-	query.SetReturnData(false)
-	query.SetReturnAttributes(true)
-	query.SetReturnRef(true) // This may trigger the permission dialog
-
-	results, err := keychain.QueryItem(query)
-	if err != nil {
-		logger.Printf("Failed to ensure keychain access: %s", err)
-		return err
-	}
-
-	if len(results) == 0 {
-		logger.Printf("No keychain entry found when ensuring access")
-		return errEmptyResults
-	}
-
-	logger.Printf("Successfully ensured keychain access permission")
-	return nil
-}
-
 // KeychainClient represents a single instance of a pinentry server
 type KeychainClient struct {
 	logger   *log.Logger
@@ -396,19 +370,10 @@ func GetPIN(authFn AuthFunc, promptFn PromptFunc, logger *log.Logger) GetPinFunc
 			return string(pin), nil
 		}
 
-		// Entry exists - ensure we have permission to access it before Touch ID
-		logger.Printf("Keychain entry exists, ensuring access permission...")
-		if err := ensureKeychainAccess(keychainLabel, logger); err != nil {
-			logger.Printf("Cannot ensure keychain access, falling back to pinentry-mac: %s", err)
-			// Fall back to pinentry-mac if we can't get permission
-			pin, err := promptFn(s)
-			if err != nil {
-				logger.Printf("Error calling fallback pinentry program: %s", err)
-				return "", assuanError(err)
-			}
-			return string(pin), nil
-		}
-
+		// Entry exists — go straight to Touch ID, then fetch.
+		// (An "ensure access" prequery would trigger a *second* keychain
+		// Allow/Always-Allow prompt; passwordFromKeychain already exercises
+		// the same ACL.)
 		var ok bool
 		authStart := time.Now()
 		logger.Printf("Calling Touch ID authFn (reason=%q)", fmt.Sprintf("access the PIN for %s", keychainLabel))
