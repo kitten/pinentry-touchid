@@ -20,6 +20,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/enescakir/emoji"
 	"github.com/foxcpp/go-assuan/common"
@@ -409,10 +410,13 @@ func GetPIN(authFn AuthFunc, promptFn PromptFunc, logger *log.Logger) GetPinFunc
 		}
 
 		var ok bool
+		authStart := time.Now()
+		logger.Printf("Calling Touch ID authFn (reason=%q)", fmt.Sprintf("access the PIN for %s", keychainLabel))
 		if ok, err = authFn(fmt.Sprintf("access the PIN for %s", keychainLabel)); err != nil {
-			logger.Printf("Error authenticating with Touch ID: %s", err)
+			logger.Printf("Touch ID authFn returned error after %s: %s", time.Since(authStart), err)
 			return "", assuanError(err)
 		}
+		logger.Printf("Touch ID authFn returned ok=%v after %s", ok, time.Since(authStart))
 
 		if !ok {
 			logger.Printf("Failed to authenticate")

@@ -1,0 +1,70 @@
+{
+  description = "pinentry-touchid (kitten fork) — pinentry that uses macOS Touch ID";
+
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    flake-utils.url = "github:numtide/flake-utils";
+  };
+
+  outputs =
+    { nixpkgs, flake-utils, ... }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        pkgs = nixpkgs.legacyPackages.${system};
+      in
+      {
+        packages.default = pkgs.buildGoModule rec {
+          pname = "pinentry-touchid";
+          version = "kitten";
+          vendorHash = "sha256-v3JtUk94/javwhtUsPUFV9EwFfaixZpb4AqKpCEaZp4=";
+          proxyVendor = true;
+
+          doCheck = false;
+          src = ./.;
+          subPackages = [ "." ];
+
+          buildInputs = [ pkgs.makeBinaryWrapper ];
+          nativeBuildInputs = [ pkgs.pinentry_mac ];
+          ldflags = [
+            "-s"
+            "-w"
+            "-X main.version=${version}"
+          ];
+
+          patchPhase = ''
+            substituteInPlace go.mod \
+              --replace-fail "=> ./go-assuan" "=> $src/go-assuan"
+          '';
+
+          postInstall = ''
+            wrapProgram $out/bin/pinentry-touchid \
+              --prefix PATH : ${pkgs.pinentry_mac}/bin
+          '';
+
+          meta = with pkgs.lib; {
+            description = "Pinentry that uses macOS Touch ID (kitten fork)";
+            homepage = "https://github.com/kitten/pinentry-touchid";
+            license = licenses.asl20;
+            platforms = platforms.darwin;
+            mainProgram = "pinentry-touchid";
+          };
+        };
+
+        devShells.default = pkgs.mkShell {
+          packages = with pkgs; [
+            go
+            gopls
+            gotools
+            darwin.apple_sdk.frameworks.CoreFoundation
+            darwin.apple_sdk.frameworks.Foundation
+            darwin.apple_sdk.frameworks.LocalAuthentication
+          ];
+          shellHook = ''
+            unset GOPATH GOROOT
+            export NIX_LDFLAGS="-F${pkgs.darwin.apple_sdk.frameworks.CoreFoundation}/Library/Frameworks -framework CoreFoundation $NIX_LDFLAGS"
+          '';
+        };
+      }
+    );
+}
