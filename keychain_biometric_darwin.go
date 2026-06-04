@@ -8,19 +8,19 @@ package main
 #include <Security/Security.h>
 #include <stdlib.h>
 
-// Adds a generic-password item protected by a biometric SecAccessControl.
-// Every subsequent read of the item triggers macOS's standard Touch ID
-// modal — no per-app ACL whitelist is involved, so rebuilding the binary
-// (which produces a new nix store path) does not invalidate access.
+// Reads of biometric-ACL items trigger Touch ID at SecItemCopyMatching time —
+// no per-app ACL whitelist, so the item survives binary rebuilds (new CDHash).
 static OSStatus pt_addBiometricItem(
     const UInt8* labelBytes, CFIndex labelLen,
     const UInt8* serviceBytes, CFIndex serviceLen,
     const UInt8* accountBytes, CFIndex accountLen,
-    const UInt8* dataBytes, CFIndex dataLen
+    const UInt8* dataBytes, CFIndex dataLen,
+    const UInt8* commentBytes, CFIndex commentLen
 ) {
     CFStringRef label   = CFStringCreateWithBytes(NULL, labelBytes,   labelLen,   kCFStringEncodingUTF8, false);
     CFStringRef service = CFStringCreateWithBytes(NULL, serviceBytes, serviceLen, kCFStringEncodingUTF8, false);
     CFStringRef account = CFStringCreateWithBytes(NULL, accountBytes, accountLen, kCFStringEncodingUTF8, false);
+    CFStringRef comment = CFStringCreateWithBytes(NULL, commentBytes, commentLen, kCFStringEncodingUTF8, false);
     CFDataRef   data    = CFDataCreate(NULL, dataBytes, dataLen);
 
     CFErrorRef cfErr = NULL;
@@ -33,7 +33,7 @@ static OSStatus pt_addBiometricItem(
 
     if (access == NULL) {
         if (cfErr != NULL) CFRelease(cfErr);
-        CFRelease(label); CFRelease(service); CFRelease(account); CFRelease(data);
+        CFRelease(label); CFRelease(service); CFRelease(account); CFRelease(comment); CFRelease(data);
         return errSecAuthFailed;
     }
 
@@ -45,6 +45,7 @@ static OSStatus pt_addBiometricItem(
         kSecValueData,
         kSecAttrAccessControl,
         kSecAttrSynchronizable,
+        kSecAttrComment,
     };
     const void* values[] = {
         kSecClassGenericPassword,
@@ -54,10 +55,11 @@ static OSStatus pt_addBiometricItem(
         data,
         access,
         kCFBooleanFalse,
+        comment,
     };
 
     CFDictionaryRef query = CFDictionaryCreate(
-        kCFAllocatorDefault, keys, values, 7,
+        kCFAllocatorDefault, keys, values, 8,
         &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks
     );
@@ -66,7 +68,7 @@ static OSStatus pt_addBiometricItem(
 
     CFRelease(query);
     CFRelease(access);
-    CFRelease(label); CFRelease(service); CFRelease(account); CFRelease(data);
+    CFRelease(label); CFRelease(service); CFRelease(account); CFRelease(comment); CFRelease(data);
     return status;
 }
 
@@ -103,31 +105,35 @@ import (
 	"unsafe"
 )
 
-// macOS Security framework status codes (subset).
 const (
-	errSecDuplicateItem = -25299
-	errSecItemNotFound  = -25300
+	errSecDuplicateItem      = -25299
+	errSecItemNotFound       = -25300
+	errSecMissingEntitlement = -34018
 )
 
-// errKeychainDuplicate is returned by storePasswordWithBiometric when an
-// item with the same (service, account) already exists. Callers should
-// delete the existing entry and retry to migrate to biometric ACL.
-var errKeychainDuplicate = errors.New("keychain entry already exists")
+// Tag set on biometric-ACL items so the read path can distinguish them
+// from legacy entries (which were created via keybase/go-keychain and
+// have no biometric protection).
+const biometricCommentMarker = "pinentry-touchid-biometric-v1"
 
-// storePasswordWithBiometric creates a keychain entry whose ACL requires
-// biometric authentication on every read. No per-app whitelist is used,
-// so the entry remains accessible across rebuilds of this binary.
+var (
+	errKeychainDuplicate  = errors.New("keychain entry already exists")
+	errMissingEntitlement = errors.New("missing keychain-access-groups entitlement")
+)
+
 func storePasswordWithBiometric(label, service, account string, password []byte) error {
 	labelPtr, labelLen := bytesPtr([]byte(label))
 	servicePtr, serviceLen := bytesPtr([]byte(service))
 	accountPtr, accountLen := bytesPtr([]byte(account))
 	dataPtr, dataLen := bytesPtr(password)
+	commentPtr, commentLen := bytesPtr([]byte(biometricCommentMarker))
 
 	status := C.pt_addBiometricItem(
 		labelPtr, labelLen,
 		servicePtr, serviceLen,
 		accountPtr, accountLen,
 		dataPtr, dataLen,
+		commentPtr, commentLen,
 	)
 
 	switch status {
@@ -135,13 +141,14 @@ func storePasswordWithBiometric(label, service, account string, password []byte)
 		return nil
 	case errSecDuplicateItem:
 		return errKeychainDuplicate
+	case errSecMissingEntitlement:
+		return errMissingEntitlement
 	default:
 		return fmt.Errorf("SecItemAdd failed with OSStatus %d", status)
 	}
 }
 
-// deleteKeychainItem removes a (service, account) entry. Returns nil if
-// the entry didn't exist.
+// Returns nil if the entry didn't exist.
 func deleteKeychainItem(service, account string) error {
 	servicePtr, serviceLen := bytesPtr([]byte(service))
 	accountPtr, accountLen := bytesPtr([]byte(account))
@@ -153,8 +160,7 @@ func deleteKeychainItem(service, account string) error {
 	return nil
 }
 
-// bytesPtr returns a C pointer suitable for passing into CGO, handling the
-// zero-length case where &b[0] would panic.
+// Handles the zero-length case where &b[0] would panic.
 func bytesPtr(b []byte) (*C.UInt8, C.CFIndex) {
 	if len(b) == 0 {
 		return nil, 0

@@ -167,16 +167,25 @@ func passwordFromKeychain(label string) (string, error) {
 	return string(results[0].Data), nil
 }
 
-// storePasswordInKeychain saves a password/pin in the keychain with the
-// given label and keyInfo.
-//
-// Note: macOS requires codesign + keychain-access-groups entitlement to
-// create items with a biometric SecAccessControl (kSecAccessControlBiometryAny).
-// nix-built binaries are not codesigned, so we fall back to a regular
-// keychain item and gate access via an explicit LAContext call (authFn)
-// in GetPIN. Biometric ACL support would require a codesign step in the
-// nix build with an entitlements plist.
+// Tries biometric ACL first; falls back to a legacy (per-app ACL) item if
+// the binary lacks the keychain-access-groups entitlement.
 func storePasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logger) error {
+	err := storePasswordWithBiometric(label, "GnuPG", keyInfo, pin)
+	if err == errKeychainDuplicate {
+		logger.Printf("Existing entry blocks insertion, deleting and retrying")
+		if delErr := deleteKeychainItem("GnuPG", keyInfo); delErr != nil {
+			return fmt.Errorf("deleting existing entry: %w", delErr)
+		}
+		err = storePasswordWithBiometric(label, "GnuPG", keyInfo, pin)
+	}
+	if err == errMissingEntitlement {
+		logger.Printf("Missing keychain-access-groups entitlement; falling back to legacy ACL")
+		return storeLegacyPasswordInKeychain(label, keyInfo, pin, logger)
+	}
+	return err
+}
+
+func storeLegacyPasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logger) error {
 	item := keychain.NewItem()
 	item.SetSecClass(keychain.SecClassGenericPassword)
 	item.SetService("GnuPG")
@@ -188,7 +197,6 @@ func storePasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logg
 
 	err := keychain.AddItem(item)
 	if err == keychain.ErrorDuplicateItem {
-		// Old entry blocks insertion — drop it and retry.
 		logger.Printf("Existing entry blocks insertion, deleting and retrying")
 		if delErr := deleteKeychainItem("GnuPG", keyInfo); delErr != nil {
 			return fmt.Errorf("deleting existing entry: %w", delErr)
