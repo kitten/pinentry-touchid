@@ -17,11 +17,11 @@ static OSStatus pt_addBiometricItem(
     const UInt8* dataBytes, CFIndex dataLen,
     const UInt8* commentBytes, CFIndex commentLen
 ) {
-    CFStringRef label   = CFStringCreateWithBytes(NULL, labelBytes,   labelLen,   kCFStringEncodingUTF8, false);
-    CFStringRef service = CFStringCreateWithBytes(NULL, serviceBytes, serviceLen, kCFStringEncodingUTF8, false);
-    CFStringRef account = CFStringCreateWithBytes(NULL, accountBytes, accountLen, kCFStringEncodingUTF8, false);
-    CFStringRef comment = CFStringCreateWithBytes(NULL, commentBytes, commentLen, kCFStringEncodingUTF8, false);
-    CFDataRef   data    = CFDataCreate(NULL, dataBytes, dataLen);
+    CFStringRef label       = CFStringCreateWithBytes(NULL, labelBytes,   labelLen,   kCFStringEncodingUTF8, false);
+    CFStringRef service     = CFStringCreateWithBytes(NULL, serviceBytes, serviceLen, kCFStringEncodingUTF8, false);
+    CFStringRef account     = CFStringCreateWithBytes(NULL, accountBytes, accountLen, kCFStringEncodingUTF8, false);
+    CFStringRef description = CFStringCreateWithBytes(NULL, commentBytes, commentLen, kCFStringEncodingUTF8, false);
+    CFDataRef   data        = CFDataCreate(NULL, dataBytes, dataLen);
 
     CFErrorRef cfErr = NULL;
     SecAccessControlRef access = SecAccessControlCreateWithFlags(
@@ -33,7 +33,7 @@ static OSStatus pt_addBiometricItem(
 
     if (access == NULL) {
         if (cfErr != NULL) CFRelease(cfErr);
-        CFRelease(label); CFRelease(service); CFRelease(account); CFRelease(comment); CFRelease(data);
+        CFRelease(label); CFRelease(service); CFRelease(account); CFRelease(description); CFRelease(data);
         return errSecAuthFailed;
     }
 
@@ -45,7 +45,7 @@ static OSStatus pt_addBiometricItem(
         kSecValueData,
         kSecAttrAccessControl,
         kSecAttrSynchronizable,
-        kSecAttrComment,
+        kSecAttrDescription,
     };
     const void* values[] = {
         kSecClassGenericPassword,
@@ -55,7 +55,7 @@ static OSStatus pt_addBiometricItem(
         data,
         access,
         kCFBooleanFalse,
-        comment,
+        description,
     };
 
     CFDictionaryRef query = CFDictionaryCreate(
@@ -68,7 +68,7 @@ static OSStatus pt_addBiometricItem(
 
     CFRelease(query);
     CFRelease(access);
-    CFRelease(label); CFRelease(service); CFRelease(account); CFRelease(comment); CFRelease(data);
+    CFRelease(label); CFRelease(service); CFRelease(account); CFRelease(description); CFRelease(data);
     return status;
 }
 
@@ -111,10 +111,10 @@ const (
 	errSecMissingEntitlement = -34018
 )
 
-// Tag set on biometric-ACL items so the read path can distinguish them
-// from legacy entries (which were created via keybase/go-keychain and
-// have no biometric protection).
-const biometricCommentMarker = "pinentry-touchid-biometric-v1"
+// Stored in kSecAttrDescription on biometric items so the read path can
+// tell them apart from legacy entries. kSecAttrComment would be the more
+// idiomatic choice but keybase/go-keychain's QueryResult doesn't expose it.
+const biometricDescriptionMarker = "pinentry-touchid-biometric-v1"
 
 var (
 	errKeychainDuplicate  = errors.New("keychain entry already exists")
@@ -126,7 +126,7 @@ func storePasswordWithBiometric(label, service, account string, password []byte)
 	servicePtr, serviceLen := bytesPtr([]byte(service))
 	accountPtr, accountLen := bytesPtr([]byte(account))
 	dataPtr, dataLen := bytesPtr(password)
-	commentPtr, commentLen := bytesPtr([]byte(biometricCommentMarker))
+	commentPtr, commentLen := bytesPtr([]byte(biometricDescriptionMarker))
 
 	status := C.pt_addBiometricItem(
 		labelPtr, labelLen,

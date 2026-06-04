@@ -74,10 +74,8 @@ const (
 	expectedKeyLengthSSH     = 43
 )
 
-// checkEntryInKeychain executes a search in the current keychain. The search configured to not
-// return the Data stored in the Keychain, as a result this should not require any type of
-// authentication.
-func checkEntryInKeychain(label string) (bool, error) {
+// Attribute-only query; does not require ACL approval.
+func checkEntryInKeychain(label string) (exists, biometric bool, err error) {
 	query := keychain.NewItem()
 	query.SetSecClass(keychain.SecClassGenericPassword)
 	query.SetLabel(label)
@@ -87,10 +85,12 @@ func checkEntryInKeychain(label string) (bool, error) {
 
 	results, err := keychain.QueryItem(query)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
-
-	return len(results) == 1, nil
+	if len(results) == 0 {
+		return false, false, nil
+	}
+	return true, results[0].Description == biometricDescriptionMarker, nil
 }
 
 // KeychainClient represents a single instance of a pinentry server
@@ -167,9 +167,10 @@ func passwordFromKeychain(label string) (string, error) {
 	return string(results[0].Data), nil
 }
 
-// Tries biometric ACL first; falls back to a legacy (per-app ACL) item if
-// the binary lacks the keychain-access-groups entitlement.
-func storePasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logger) error {
+// Stores with a biometric SecAccessControl. Returns errMissingEntitlement
+// if the binary isn't codesigned with keychain-access-groups; callers that
+// want a guaranteed write should call storePasswordInKeychain instead.
+func storeBiometricKeychainItem(label, keyInfo string, pin []byte, logger *log.Logger) error {
 	err := storePasswordWithBiometric(label, "GnuPG", keyInfo, pin)
 	if err == errKeychainDuplicate {
 		logger.Printf("Existing entry blocks insertion, deleting and retrying")
@@ -178,6 +179,13 @@ func storePasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logg
 		}
 		err = storePasswordWithBiometric(label, "GnuPG", keyInfo, pin)
 	}
+	return err
+}
+
+// Tries biometric ACL; falls back to a legacy (per-app ACL) item if the
+// binary lacks the keychain-access-groups entitlement.
+func storePasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logger) error {
+	err := storeBiometricKeychainItem(label, keyInfo, pin, logger)
 	if err == errMissingEntitlement {
 		logger.Printf("Missing keychain-access-groups entitlement; falling back to legacy ACL")
 		return storeLegacyPasswordInKeychain(label, keyInfo, pin, logger)
@@ -328,23 +336,18 @@ func GetPIN(authFn AuthFunc, promptFn PromptFunc, logger *log.Logger) GetPinFunc
 		}
 
 		keychainLabel := fmt.Sprintf("%s <%s> (%s)", name, email, keyID)
+		// s.KeyInfo is "<x>/<cacheId>" — see
+		// https://gist.github.com/mdeguzis/05d1f284f931223624834788da045c65#file-info-pinentry-L357-L362
+		keyInfo := strings.Split(s.KeyInfo, "/")[1]
+
 		logger.Printf("Checking for keychain entry: %s", keychainLabel)
-		exists, err := checkEntryInKeychain(keychainLabel)
+		exists, isBiometric, err := checkEntryInKeychain(keychainLabel)
 		if err != nil {
 			logger.Printf("error checking entry in keychain: %s", err)
 			return "", assuanError(err)
 		}
-		logger.Printf("Keychain entry exists: %v", exists)
+		logger.Printf("Keychain entry exists=%v biometric=%v", exists, isBiometric)
 
-		// If the entry is not found in the keychain, we trigger `pinentry-mac` with the option
-		// to save the pin in the keychain.
-		//
-		// When trying to access the newly created keychain item we will get the normal password prompt
-		// from the OS, we need to "Always allow" access to our application, still the access from our
-		// app to the keychain item will be guarded by Touch ID.
-		//
-		// Currently I'm not aware of a way for automatically adding our binary to the list of always
-		// allowed apps, see: https://github.com/keybase/go-keychain/issues/54.
 		if !exists {
 			pin, err := promptFn(s)
 			if err != nil {
@@ -356,14 +359,6 @@ func GetPIN(authFn AuthFunc, promptFn PromptFunc, logger *log.Logger) GetPinFunc
 				return "", assuanError(fmt.Errorf("pinentry-mac didn't return a password"))
 			}
 
-			// s.KeyInfo is always in the form of x/cacheId
-			// https://gist.github.com/mdeguzis/05d1f284f931223624834788da045c65#file-info-pinentry-L357-L362
-			keyInfo := strings.Split(s.KeyInfo, "/")[1]
-
-			// pinentry-mac may have stored the entry itself if the user
-			// left "Save in keychain" checked. We delete and replace so
-			// the entry is owned by us; the entry remains non-biometric
-			// (see note in storePasswordInKeychain).
 			if err := storePasswordInKeychain(keychainLabel, keyInfo, pin, logger); err != nil {
 				logger.Printf("Error storing password in keychain: %s", err)
 				return "", assuanError(err)
@@ -372,22 +367,24 @@ func GetPIN(authFn AuthFunc, promptFn PromptFunc, logger *log.Logger) GetPinFunc
 			return string(pin), nil
 		}
 
-		// Entry exists — gate access on a fresh Touch ID via LAContext,
-		// then fetch from keychain. The keychain item itself has no
-		// biometric ACL (see storePasswordInKeychain), so authFn is the
-		// actual security check.
-		authStart := time.Now()
-		logger.Printf("Calling Touch ID authFn (reason=%q)", fmt.Sprintf("access the PIN for %s", keychainLabel))
-		ok, err := authFn(fmt.Sprintf("access the PIN for %s", keychainLabel))
-		if err != nil {
-			logger.Printf("Touch ID authFn returned error after %s: %s", time.Since(authStart), err)
-			return "", assuanError(err)
-		}
-		logger.Printf("Touch ID authFn returned ok=%v after %s", ok, time.Since(authStart))
+		// Biometric items prompt for Touch ID inside SecItemCopyMatching via the
+		// ACL itself; a pre-call to LAContext would double-prompt. Legacy items
+		// have no biometric ACL, so we keep the LAContext gate for them.
+		if !isBiometric {
+			authReason := fmt.Sprintf("access the PIN for %s", keychainLabel)
+			authStart := time.Now()
+			logger.Printf("Calling Touch ID authFn (reason=%q)", authReason)
+			ok, err := authFn(authReason)
+			if err != nil {
+				logger.Printf("Touch ID authFn returned error after %s: %s", time.Since(authStart), err)
+				return "", assuanError(err)
+			}
+			logger.Printf("Touch ID authFn returned ok=%v after %s", ok, time.Since(authStart))
 
-		if !ok {
-			logger.Printf("Touch ID authentication failed")
-			return "", nil
+			if !ok {
+				logger.Printf("Touch ID authentication failed")
+				return "", nil
+			}
 		}
 
 		fetchStart := time.Now()
@@ -397,6 +394,18 @@ func GetPIN(authFn AuthFunc, promptFn PromptFunc, logger *log.Logger) GetPinFunc
 			return "", assuanError(err)
 		}
 		logger.Printf("Password fetched from keychain after %s", time.Since(fetchStart))
+
+		if !isBiometric {
+			migErr := storeBiometricKeychainItem(keychainLabel, keyInfo, []byte(password), logger)
+			switch {
+			case migErr == nil:
+				logger.Printf("Migrated keychain entry to biometric ACL")
+			case migErr == errMissingEntitlement:
+				// Binary unsigned — leave the legacy entry alone.
+			default:
+				logger.Printf("Biometric migration failed (non-fatal): %s", migErr)
+			}
+		}
 
 		return password, nil
 	}

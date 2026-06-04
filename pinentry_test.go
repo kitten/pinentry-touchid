@@ -7,7 +7,6 @@ package main
 import (
 	"bytes"
 	"io"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -38,7 +37,7 @@ var (
 )
 
 func TestStoreEntryInKeychain(t *testing.T) {
-	err := storePasswordInKeychain("sampleLabel", "keyInfo", []byte(testPassword))
+	err := storePasswordInKeychain("sampleLabel", "keyInfo", []byte(testPassword), log.New(io.Discard, "", 0))
 
 	if err != nil {
 		t.Fatalf("storing entry in the Keychain should succeed: %s", err)
@@ -74,13 +73,11 @@ func TestGetPINSuccessfulAuthentication(t *testing.T) {
 		KeyInfo: keyInfo,
 	}
 
-	err := storePasswordInKeychain(keychainLabel, keyInfo, []byte(testPassword))
+	logger := log.New(io.Discard, "", 0)
+	err := storePasswordInKeychain(keychainLabel, keyInfo, []byte(testPassword), logger)
 	if err != nil {
 		t.Fatalf("failed precreating entry in the Keychain: %s", err)
 	}
-
-	logger := &log.Logger{}
-	logger.SetOutput(ioutil.Discard)
 
 	fn := GetPIN(successfulAuthFn, dummyPrompt, logger)
 	pass, pinErr := fn(params)
@@ -98,14 +95,14 @@ func TestGetPINUnsuccessfulAuthentication(t *testing.T) {
 	keychainLabel := `Firstname Lastname <test@email.com> (61AF059BD632F971)`
 	defer func() { _ = cleanKeychain(keychainLabel) }()
 
-	logger := log.New(ioutil.Discard, "", 0)
+	logger := log.New(io.Discard, "", 0)
 
 	params := pinentry.Settings{
 		Desc:    keyDesc,
 		KeyInfo: keyInfo,
 	}
 
-	err := storePasswordInKeychain(keychainLabel, keyInfo, []byte(testPassword))
+	err := storePasswordInKeychain(keychainLabel, keyInfo, []byte(testPassword), logger)
 	if err != nil {
 		t.Fatalf("failed precreating entry in the Keychain: %s", err)
 	}
@@ -126,7 +123,7 @@ func TestEntryNotInKeychain(t *testing.T) {
 	keychainLabel := `Firstname Lastname <test@email.com> (61AF059BD632F971)`
 	defer func() { _ = cleanKeychain(keychainLabel) }()
 
-	logger := log.New(ioutil.Discard, "", 0)
+	logger := log.New(io.Discard, "", 0)
 	params := pinentry.Settings{
 		Desc:    keyDesc,
 		KeyInfo: keyInfo,
