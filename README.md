@@ -6,7 +6,8 @@
 >
 > Key changes:
 > - ✅ **GETINFO support** - Implements `GETINFO flavor/version/pid/ttyinfo` commands required by GnuPG 2.4+
-> - ✅ **Keychain permission handling** - Properly handles macOS keychain access permissions for entries created by pinentry-mac
+> - ✅ **Biometric keychain ACL** - Keychain items are stored with `kSecAccessControlBiometryAny`, so Touch ID is enforced by the keychain itself and survives binary rebuilds without re-prompting "Always Allow"
+> - ✅ **Codesigned binary** - The Nix flake codesigns the binary with a `keychain-access-groups` entitlement (required for biometric ACL on `SecItemAdd`)
 > - ✅ **Name parsing fix** - Correctly strips GPG key comments to match existing keychain entries
 > - ✅ **Duplicate entry handling** - Gracefully handles duplicate keychain entries instead of failing
 >
@@ -31,20 +32,45 @@ macOS keychain.
 
 ## How does it work
 
-This program interacts with the `gpg-agent` for providing a password, using the following rules:
+`pinentry-touchid` stores the PIN in a Keychain item whose access control is
+`kSecAccessControlBiometryAny`. macOS enforces Touch ID at the keychain layer:
+any read of the item prompts for Touch ID via the system modal, regardless of
+which binary is doing the reading. Rebuilding the binary (new CDHash) no longer
+invalidates a prior "Always Allow" because there's no per-app ACL whitelist in
+the first place.
 
-- If the password entry for the given key cannot be found in the Keychain we fallback to the
-  `pinentry-mac` program to get the password. We recommend preventing `pinentry-mac` from storing the
-  password: uncheck the <kbd>Save in keychain</kbd> checkbox in the dialog.
+Flow:
 
-- If a password entry is found the user will be shown the Touch ID dialog and upon successful
-  authentication the password stored from the keychain will be returned to the gpg-agent.
+- **No entry yet** — falls back to `pinentry-mac` to prompt for the PIN, then
+  stores it with biometric ACL. Uncheck <kbd>Save in keychain</kbd> in
+  pinentry-mac's dialog so it doesn't create a parallel entry.
 
-- If a password entry is found but is not "owned" by the `pinentry-touchid` program after the
-  successful authentication with Touch ID, a normal password will be shown. This is an extra step
-  enforced by the macOS keychain. In this dialog click <kbd>Always allow</kbd> after entering the
-  password. This will allow `pinentry-touchid` to access the password entry without the need to type
-  the additional password, but still, the access to the password will be guarded by Touch ID.
+- **Legacy (pre-biometric) entry exists** — treated as if no entry exists: you
+  re-enter the PIN once via `pinentry-mac` and we replace the legacy item with
+  a biometric one. After that, Touch ID prompts only.
+
+- **Biometric entry exists** — read triggers the Touch ID modal; on success the
+  PIN is returned to `gpg-agent`.
+
+### Codesigning
+
+`SecItemAdd` with `kSecAccessControlBiometryAny` returns
+`errSecMissingEntitlement` (-34018) on binaries without a
+`keychain-access-groups` entitlement. The Nix flake handles this in
+`postFixup` via `pkgs.darwin.sigtool`, using an ad-hoc signature plus the
+`entitlements.plist` in this repo. Building outside the flake (plain
+`go build`) produces a binary that can't create biometric items and will
+error out on first store.
+
+### Security
+
+The biometric ACL means Touch ID is the actual gate — it can't be bypassed by
+code in pinentry-touchid (or any other process). One trade-off: with ad-hoc
+codesigning, the `keychain-access-groups` membership isn't tied to a Developer
+ID team prefix, so in principle a different ad-hoc-signed binary could claim
+the same access group. Such a binary could initiate a Touch ID prompt for the
+item, but couldn't read it without the user's live fingerprint — there is no
+silent-exfil path.
 
 ## Installation
 
