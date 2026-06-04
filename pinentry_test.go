@@ -20,9 +20,8 @@ import (
 )
 
 const (
-	emptyPassword = ""
-	testPassword  = "toomanysecrets2"
-	keyDesc       = `Please enter the passphrase to unlock the OpenPGP secret key:
+	testPassword = "toomanysecrets2"
+	keyDesc      = `Please enter the passphrase to unlock the OpenPGP secret key:
 "Firstname Lastname <test@email.com>"
 2048-bit RSA key, ID 61AF059BD632F971,
 created 2021-01-01 (main key ID 70D56DF4CA30DE16).
@@ -30,11 +29,7 @@ created 2021-01-01 (main key ID 70D56DF4CA30DE16).
 	keyInfo = "n/8043823CBC5C5A0C66866520F333076D"
 )
 
-var (
-	failedAuthFn     = func(reason string) (bool, error) { return false, nil }
-	successfulAuthFn = func(reason string) (bool, error) { return true, nil }
-	dummyPrompt      = func(s pinentry.Settings) ([]byte, error) { return []byte{}, nil }
-)
+var dummyPrompt = func(s pinentry.Settings) ([]byte, error) { return []byte{}, nil }
 
 func TestStoreEntryInKeychain(t *testing.T) {
 	err := storePasswordInKeychain("sampleLabel", "keyInfo", []byte(testPassword), log.New(io.Discard, "", 0))
@@ -64,7 +59,7 @@ func TestGetPasswordFromKeychain(t *testing.T) {
 	}
 }
 
-func TestGetPINSuccessfulAuthentication(t *testing.T) {
+func TestGetPINReadsBiometricEntry(t *testing.T) {
 	keychainLabel := `Firstname Lastname <test@email.com> (61AF059BD632F971)`
 	defer func() { _ = cleanKeychain(keychainLabel) }()
 
@@ -79,7 +74,7 @@ func TestGetPINSuccessfulAuthentication(t *testing.T) {
 		t.Fatalf("failed precreating entry in the Keychain: %s", err)
 	}
 
-	fn := GetPIN(successfulAuthFn, dummyPrompt, logger)
+	fn := GetPIN(dummyPrompt, logger)
 	pass, pinErr := fn(params)
 
 	if pinErr != nil {
@@ -87,34 +82,6 @@ func TestGetPINSuccessfulAuthentication(t *testing.T) {
 	}
 
 	if pass != testPassword {
-		t.Fatalf("password mismatch got: %s want: %s", pass, testPassword)
-	}
-}
-
-func TestGetPINUnsuccessfulAuthentication(t *testing.T) {
-	keychainLabel := `Firstname Lastname <test@email.com> (61AF059BD632F971)`
-	defer func() { _ = cleanKeychain(keychainLabel) }()
-
-	logger := log.New(io.Discard, "", 0)
-
-	params := pinentry.Settings{
-		Desc:    keyDesc,
-		KeyInfo: keyInfo,
-	}
-
-	err := storePasswordInKeychain(keychainLabel, keyInfo, []byte(testPassword), logger)
-	if err != nil {
-		t.Fatalf("failed precreating entry in the Keychain: %s", err)
-	}
-
-	fn := GetPIN(failedAuthFn, dummyPrompt, logger)
-	pass, pinErr := fn(params)
-
-	if pinErr != nil {
-		t.Fatalf("call to GetPIN should succeed: %s", pinErr)
-	}
-
-	if pass != emptyPassword {
 		t.Fatalf("password mismatch got: %s want: %s", pass, testPassword)
 	}
 }
@@ -139,7 +106,7 @@ func TestEntryNotInKeychain(t *testing.T) {
 		fallBack = true
 		return []byte(testPassword), nil
 	}
-	fn := GetPIN(successfulAuthFn, validPinFn, logger)
+	fn := GetPIN(validPinFn, logger)
 	pass, pinErr := fn(params)
 	if pinErr != nil {
 		t.Fatalf("call to GetPIN should succeed: %s", pinErr)
