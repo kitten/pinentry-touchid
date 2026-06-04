@@ -25,7 +25,7 @@
           subPackages = [ "." ];
 
           buildInputs = [ pkgs.makeBinaryWrapper ];
-          nativeBuildInputs = [ pkgs.pinentry_mac ];
+          nativeBuildInputs = [ pkgs.pinentry_mac pkgs.darwin.sigtool ];
           ldflags = [
             "-s"
             "-w"
@@ -40,6 +40,14 @@
           postInstall = ''
             wrapProgram $out/bin/pinentry-touchid \
               --prefix PATH : ${pkgs.pinentry_mac}/bin
+          '';
+
+          # Sign the wrapped binary (the launcher execv's into it, entitlements re-evaluate at exec).
+          postFixup = ''
+            codesign -f -s - \
+              --identifier sh.kitten.pinentry-touchid \
+              --entitlements ${./entitlements.plist} \
+              $out/bin/.pinentry-touchid-wrapped
           '';
 
           meta = with pkgs.lib; {
