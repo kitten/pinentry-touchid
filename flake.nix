@@ -12,51 +12,103 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        version = "0.1.0";
+        releaseApp = pkgs.writeShellApplication {
+          name = "release";
+          runtimeInputs = with pkgs; [ gh jq zip git ];
+          text = ''exec bash ${./scripts/release.sh} "$@"'';
+        };
       in
       {
-        packages.default = pkgs.buildGoModule rec {
-          pname = "pinentry-touchid";
-          version = "kitten";
-          vendorHash = "sha256-v3JtUk94/javwhtUsPUFV9EwFfaixZpb4AqKpCEaZp4=";
-          proxyVendor = true;
+        packages = rec {
+          default = prebuilt;
 
-          doCheck = false;
-          src = ./.;
-          subPackages = [ "." ];
+          # Pre-built variant (default): fetch the Developer ID-signed .app and
+          # wrap its inner binary with pinentry-mac on PATH. Enforced Touch ID
+          # needs a signature the sandbox can't make — hence prebuilt vs unsigned.
+          prebuilt = pkgs.stdenvNoCC.mkDerivation {
+            pname = "pinentry-touchid";
+            inherit version;
 
-          buildInputs = [ pkgs.makeBinaryWrapper ];
-          nativeBuildInputs = [ pkgs.pinentry_mac pkgs.darwin.sigtool ];
-          ldflags = [
-            "-s"
-            "-w"
-            "-X main.version=${version}"
-          ];
+            src = pkgs.fetchurl {
+              url = "https://github.com/kitten/pinentry-touchid/releases/download/v${version}/pinentry-touchid-macos.zip";
+              hash = "sha256-6hqvQFajoUbrMH+wZPBzjJDl2pRNVt+asXVDyGRxrm4=";
+            };
 
-          patchPhase = ''
-            substituteInPlace go.mod \
-              --replace-fail "=> ./go-assuan" "=> $src/go-assuan"
-          '';
+            nativeBuildInputs = [
+              pkgs.unzip
+              pkgs.makeWrapper
+            ];
 
-          postInstall = ''
-            wrapProgram $out/bin/pinentry-touchid \
-              --prefix PATH : ${pkgs.pinentry_mac}/bin
-          '';
+            # Pre-signed: don't strip/rewrite, or the signature + profile break.
+            dontBuild = true;
+            dontFixup = true;
 
-          # Sign the wrapped binary (the launcher execv's into it, entitlements re-evaluate at exec).
-          postFixup = ''
-            codesign -f -s - \
-              --identifier sh.kitten.pinentry-touchid \
-              --entitlements ${./entitlements.plist} \
-              $out/bin/.pinentry-touchid-wrapped
-          '';
+            unpackPhase = "unzip -q $src";
 
-          meta = with pkgs.lib; {
-            description = "Pinentry that uses macOS Touch ID (kitten fork)";
-            homepage = "https://github.com/kitten/pinentry-touchid";
-            license = licenses.asl20;
-            platforms = platforms.darwin;
-            mainProgram = "pinentry-touchid";
+            installPhase = ''
+              mkdir -p $out/Applications $out/bin
+              cp -R pinentry-touchid.app $out/Applications/
+              makeWrapper \
+                $out/Applications/pinentry-touchid.app/Contents/MacOS/pinentry-touchid \
+                $out/bin/pinentry-touchid \
+                --prefix PATH : ${pkgs.pinentry_mac}/bin
+            '';
+
+            meta = with pkgs.lib; {
+              description = "Pinentry that uses macOS Touch ID (kitten fork)";
+              homepage = "https://github.com/kitten/pinentry-touchid";
+              license = licenses.asl20;
+              platforms = platforms.darwin;
+              mainProgram = "pinentry-touchid";
+            };
           };
+
+          # Unsigned variant: the reproducible build entrypoint. Not usable as-is
+          # (the entitlement isn't authorized until signed); scripts/release.sh
+          # signs it and publishes it as the artifact `prebuilt` fetches.
+          unsigned = pkgs.buildGoModule {
+            pname = "pinentry-touchid-unsigned";
+            inherit version;
+
+            src = ./.;
+            vendorHash = "sha256-v3JtUk94/javwhtUsPUFV9EwFfaixZpb4AqKpCEaZp4=";
+            proxyVendor = true;
+            doCheck = false;
+            subPackages = [ "." ];
+            ldflags = [
+              "-s"
+              "-w"
+              "-X main.version=${version}"
+            ];
+
+            patchPhase = ''
+              substituteInPlace go.mod \
+                --replace-fail "=> ./go-assuan" "=> $src/go-assuan"
+            '';
+
+            # Reshape the binary into a .app with Info.plist + profile, ready to sign.
+            postInstall = ''
+              app=$out/Applications/pinentry-touchid.app
+              mkdir -p $app/Contents/MacOS
+              mv $out/bin/pinentry-touchid $app/Contents/MacOS/pinentry-touchid
+              rmdir $out/bin || true
+              install -m444 ${./assets/Info.plist} $app/Contents/Info.plist
+              install -m444 ${./assets/pinentry-touchid.provisionprofile} $app/Contents/embedded.provisionprofile
+            '';
+
+            meta = with pkgs.lib; {
+              description = "pinentry-touchid (unsigned .app, for local Developer ID signing)";
+              homepage = "https://github.com/kitten/pinentry-touchid";
+              license = licenses.asl20;
+              platforms = platforms.darwin;
+            };
+          };
+        };
+
+        apps.release = {
+          type = "app";
+          program = "${releaseApp}/bin/release";
         };
 
         devShells.default = pkgs.mkShell {

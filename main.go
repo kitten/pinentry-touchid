@@ -28,7 +28,6 @@ import (
 	"github.com/foxcpp/go-assuan/server"
 	pinentryBinary "github.com/gopasspw/pinentry"
 	"github.com/jorgelbg/pinentry-touchid/sensor"
-	"github.com/keybase/go-keychain"
 )
 
 // PromptFunc is a function that asks a password from the user
@@ -72,21 +71,7 @@ const (
 // Reports only biometric-marked entries; legacy entries are ignored so the
 // caller re-prompts and replaces them.
 func checkEntryInKeychain(label string) (bool, error) {
-	query := keychain.NewItem()
-	query.SetSecClass(keychain.SecClassGenericPassword)
-	query.SetLabel(label)
-	query.SetMatchLimit(keychain.MatchLimitOne)
-	query.SetReturnData(false)
-	query.SetReturnAttributes(true)
-
-	results, err := keychain.QueryItem(query)
-	if err != nil {
-		return false, err
-	}
-	if len(results) == 0 {
-		return false, nil
-	}
-	return results[0].Description == biometricDescriptionMarker, nil
+	return checkBiometricItem(label)
 }
 
 // KeychainClient represents a single instance of a pinentry server
@@ -136,26 +121,11 @@ func WithLogger(logger *log.Logger) KeychainClient {
 
 // passwordFromKeychain retrieves a password given a label from the Keychain
 func passwordFromKeychain(label string) (string, error) {
-	query := keychain.NewItem()
-	query.SetSecClass(keychain.SecClassGenericPassword)
-	query.SetLabel(label)
-	query.SetMatchLimit(keychain.MatchLimitOne)
-	query.SetReturnData(true)
-
-	results, err := keychain.QueryItem(query)
+	data, err := readBiometricItem(label)
 	if err != nil {
 		return "", err
 	}
-
-	if len(results) == 0 {
-		return "", errEmptyResults
-	}
-
-	if len(results) > 1 {
-		return "", errMultipleMatches
-	}
-
-	return string(results[0].Data), nil
+	return string(data), nil
 }
 
 func storePasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logger) error {
