@@ -68,12 +68,6 @@ const (
 	expectedKeyLengthSSH     = 43
 )
 
-// Reports only biometric-marked entries; legacy entries are ignored so the
-// caller re-prompts and replaces them.
-func checkEntryInKeychain(label string) (bool, error) {
-	return checkBiometricItem(label)
-}
-
 // KeychainClient represents a single instance of a pinentry server
 type KeychainClient struct {
 	logger   *log.Logger
@@ -265,42 +259,35 @@ func GetPIN(promptFn PromptFunc, logger *log.Logger) GetPinFunc {
 		// https://gist.github.com/mdeguzis/05d1f284f931223624834788da045c65#file-info-pinentry-L357-L362
 		keyInfo := strings.Split(s.KeyInfo, "/")[1]
 
-		logger.Printf("Checking for keychain entry: %s", keychainLabel)
-		exists, err := checkEntryInKeychain(keychainLabel)
-		if err != nil {
-			logger.Printf("error checking entry in keychain: %s", err)
-			return "", assuanError(err)
-		}
-		logger.Printf("Biometric keychain entry exists: %v", exists)
-
-		if !exists {
-			pin, err := promptFn(s)
-			if err != nil {
-				logger.Printf("Error calling pinentry program (%s): %s", pinentryBinary.GetBinary(), err)
-			}
-
-			if len(pin) == 0 {
-				logger.Printf("pinentry-mac didn't return a password")
-				return "", assuanError(fmt.Errorf("pinentry-mac didn't return a password"))
-			}
-
-			if err := storePasswordInKeychain(keychainLabel, keyInfo, pin, logger); err != nil {
-				logger.Printf("Error storing password in keychain: %s", err)
-				return "", assuanError(err)
-			}
-
-			return string(pin), nil
-		}
-
+		// Single keychain op: the read triggers one Touch ID. A missing entry
+		// returns errEmptyResults *without* prompting, so there's no separate
+		// existence check to cause a second prompt.
 		fetchStart := time.Now()
 		password, err := passwordFromKeychain(keychainLabel)
-		if err != nil {
-			logger.Printf("Error fetching password from Keychain after %s: %s", time.Since(fetchStart), err)
+		switch {
+		case err == nil:
+			logger.Printf("Password fetched from keychain after %s", time.Since(fetchStart))
+			return password, nil
+		case err != errEmptyResults:
+			logger.Printf("Error fetching password from keychain after %s: %s", time.Since(fetchStart), err)
 			return "", assuanError(err)
 		}
-		logger.Printf("Password fetched from keychain after %s", time.Since(fetchStart))
 
-		return password, nil
+		// No entry yet — prompt via pinentry-mac and store it for next time.
+		logger.Printf("No keychain entry for %q; prompting", keychainLabel)
+		pin, err := promptFn(s)
+		if err != nil {
+			logger.Printf("Error calling pinentry program (%s): %s", pinentryBinary.GetBinary(), err)
+		}
+		if len(pin) == 0 {
+			logger.Printf("pinentry-mac didn't return a password")
+			return "", assuanError(fmt.Errorf("pinentry-mac didn't return a password"))
+		}
+		if err := storePasswordInKeychain(keychainLabel, keyInfo, pin, logger); err != nil {
+			logger.Printf("Error storing password in keychain: %s", err)
+			return "", assuanError(err)
+		}
+		return string(pin), nil
 	}
 }
 

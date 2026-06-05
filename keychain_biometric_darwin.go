@@ -100,39 +100,6 @@ static OSStatus pt_deleteItem(
     return status;
 }
 
-// Reports whether a data-protection generic-password with this label exists and
-// carries the biometric marker. Reads attributes only, so it never prompts.
-static OSStatus pt_checkBiometricItem(
-    const UInt8* labelBytes, CFIndex labelLen,
-    const UInt8* markerBytes, CFIndex markerLen,
-    int* outMatched
-) {
-    *outMatched = 0;
-    CFStringRef label  = CFStringCreateWithBytes(NULL, labelBytes,  labelLen,  kCFStringEncodingUTF8, false);
-    CFStringRef marker = CFStringCreateWithBytes(NULL, markerBytes, markerLen, kCFStringEncodingUTF8, false);
-
-    const void* keys[]   = { kSecClass, kSecAttrLabel, kSecMatchLimit, kSecReturnAttributes, kSecUseDataProtectionKeychain };
-    const void* values[] = { kSecClassGenericPassword, label, kSecMatchLimitOne, kCFBooleanTrue, kCFBooleanTrue };
-    CFDictionaryRef query = CFDictionaryCreate(
-        kCFAllocatorDefault, keys, values, 5,
-        &kCFTypeDictionaryKeyCallBacks,
-        &kCFTypeDictionaryValueCallBacks
-    );
-
-    CFTypeRef result = NULL;
-    OSStatus status = SecItemCopyMatching(query, &result);
-    if (status == errSecSuccess && result != NULL) {
-        CFStringRef desc = (CFStringRef)CFDictionaryGetValue((CFDictionaryRef)result, kSecAttrDescription);
-        if (desc != NULL && CFStringCompare(desc, marker, 0) == kCFCompareEqualTo) {
-            *outMatched = 1;
-        }
-    }
-    if (result != NULL) CFRelease(result);
-    CFRelease(query); CFRelease(label); CFRelease(marker);
-    if (status == errSecItemNotFound) return errSecSuccess;
-    return status;
-}
-
 // Returns the secret for the labelled data-protection item, triggering Touch ID
 // at SecItemCopyMatching time. Caller must free(*outData).
 static OSStatus pt_readBiometricItem(
@@ -227,20 +194,6 @@ func deleteKeychainItem(service, account string) error {
 		return fmt.Errorf("SecItemDelete failed with OSStatus %d", status)
 	}
 	return nil
-}
-
-// checkBiometricItem reports whether a biometric-marked item with this label
-// exists in the data-protection keychain. Reads attributes only — no Touch ID.
-func checkBiometricItem(label string) (bool, error) {
-	labelPtr, labelLen := bytesPtr([]byte(label))
-	markerPtr, markerLen := bytesPtr([]byte(biometricDescriptionMarker))
-
-	var matched C.int
-	status := C.pt_checkBiometricItem(labelPtr, labelLen, markerPtr, markerLen, &matched)
-	if status != 0 {
-		return false, fmt.Errorf("SecItemCopyMatching (check) failed with OSStatus %d", status)
-	}
-	return matched == 1, nil
 }
 
 // readBiometricItem returns the secret for a labelled data-protection item,
