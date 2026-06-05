@@ -32,8 +32,7 @@
 
             src = pkgs.fetchurl {
               url = "https://github.com/kitten/pinentry-touchid/releases/download/v${version}/pinentry-touchid-macos.zip";
-              # Printed by `nix run .#release` — replace after publishing v0.1.1.
-              hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+              hash = "sha256-9uCxgBaVN36gOsHzmNsnOTu6jlXRuTlI9N5Byx6SrK8=";
             };
 
             nativeBuildInputs = [
