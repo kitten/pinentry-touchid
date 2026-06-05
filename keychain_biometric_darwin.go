@@ -100,19 +100,23 @@ static OSStatus pt_deleteItem(
     return status;
 }
 
-// Returns the secret for the labelled data-protection item, triggering Touch ID
-// at SecItemCopyMatching time. Caller must free(*outData).
+// Returns the secret for the (service, account) data-protection item, triggering
+// Touch ID at SecItemCopyMatching time. Keyed on service+account (not label) so a
+// dual sign+auth key — same account, different labels — resolves to one item.
+// Caller must free(*outData).
 static OSStatus pt_readBiometricItem(
-    const UInt8* labelBytes, CFIndex labelLen,
+    const UInt8* serviceBytes, CFIndex serviceLen,
+    const UInt8* accountBytes, CFIndex accountLen,
     UInt8** outData, CFIndex* outLen
 ) {
     *outData = NULL; *outLen = 0;
-    CFStringRef label = CFStringCreateWithBytes(NULL, labelBytes, labelLen, kCFStringEncodingUTF8, false);
+    CFStringRef service = CFStringCreateWithBytes(NULL, serviceBytes, serviceLen, kCFStringEncodingUTF8, false);
+    CFStringRef account = CFStringCreateWithBytes(NULL, accountBytes, accountLen, kCFStringEncodingUTF8, false);
 
-    const void* keys[]   = { kSecClass, kSecAttrLabel, kSecMatchLimit, kSecReturnData, kSecUseDataProtectionKeychain };
-    const void* values[] = { kSecClassGenericPassword, label, kSecMatchLimitOne, kCFBooleanTrue, kCFBooleanTrue };
+    const void* keys[]   = { kSecClass, kSecAttrService, kSecAttrAccount, kSecMatchLimit, kSecReturnData, kSecUseDataProtectionKeychain };
+    const void* values[] = { kSecClassGenericPassword, service, account, kSecMatchLimitOne, kCFBooleanTrue, kCFBooleanTrue };
     CFDictionaryRef query = CFDictionaryCreate(
-        kCFAllocatorDefault, keys, values, 5,
+        kCFAllocatorDefault, keys, values, 6,
         &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks
     );
@@ -130,7 +134,7 @@ static OSStatus pt_readBiometricItem(
         }
     }
     if (result != NULL) CFRelease(result);
-    CFRelease(query); CFRelease(label);
+    CFRelease(query); CFRelease(service); CFRelease(account);
     return status;
 }
 */
@@ -196,14 +200,15 @@ func deleteKeychainItem(service, account string) error {
 	return nil
 }
 
-// readBiometricItem returns the secret for a labelled data-protection item,
+// readBiometricItem returns the secret for the (service, account) item,
 // prompting Touch ID. Returns errEmptyResults when no entry exists.
-func readBiometricItem(label string) ([]byte, error) {
-	labelPtr, labelLen := bytesPtr([]byte(label))
+func readBiometricItem(service, account string) ([]byte, error) {
+	servicePtr, serviceLen := bytesPtr([]byte(service))
+	accountPtr, accountLen := bytesPtr([]byte(account))
 
 	var data *C.UInt8
 	var length C.CFIndex
-	status := C.pt_readBiometricItem(labelPtr, labelLen, &data, &length)
+	status := C.pt_readBiometricItem(servicePtr, serviceLen, accountPtr, accountLen, &data, &length)
 	if status == errSecItemNotFound {
 		return nil, errEmptyResults
 	}

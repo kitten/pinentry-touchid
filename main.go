@@ -113,9 +113,9 @@ func WithLogger(logger *log.Logger) KeychainClient {
 	}
 }
 
-// passwordFromKeychain retrieves a password given a label from the Keychain
-func passwordFromKeychain(label string) (string, error) {
-	data, err := readBiometricItem(label)
+// passwordFromKeychain retrieves a password by (service, account) from the keychain.
+func passwordFromKeychain(service, account string) (string, error) {
+	data, err := readBiometricItem(service, account)
 	if err != nil {
 		return "", err
 	}
@@ -263,7 +263,7 @@ func GetPIN(promptFn PromptFunc, logger *log.Logger) GetPinFunc {
 		// returns errEmptyResults *without* prompting, so there's no separate
 		// existence check to cause a second prompt.
 		fetchStart := time.Now()
-		password, err := passwordFromKeychain(keychainLabel)
+		password, err := passwordFromKeychain("GnuPG", keyInfo)
 		switch {
 		case err == nil:
 			logger.Printf("Password fetched from keychain after %s", time.Since(fetchStart))
