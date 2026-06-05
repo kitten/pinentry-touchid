@@ -48,7 +48,7 @@ func TestGetPasswordFromKeychain(t *testing.T) {
 		}
 	}()
 
-	pass, err := passwordFromKeychain("sampleLabel")
+	pass, _, err := passwordFromKeychain("sampleLabel", "", "")
 
 	if err != nil {
 		t.Fatalf("fetch entry from Keychain should succeed: %s", err)
@@ -97,7 +97,7 @@ func TestEntryNotInKeychain(t *testing.T) {
 	}
 
 	// initially the entry for the test key is not in the keychain
-	if pass, err := passwordFromKeychain(keychainLabel); err == nil || pass != "" {
+	if pass, _, err := passwordFromKeychain(keychainLabel, "", ""); err == nil || pass != "" {
 		t.Fatalf("unexpected entry found in the keychain: %s", keychainLabel)
 	}
 
@@ -121,7 +121,7 @@ func TestEntryNotInKeychain(t *testing.T) {
 	}
 
 	// after the successful run of GetPIN the entry should be present in the keychain
-	if pass, err := passwordFromKeychain(keychainLabel); err != nil || pass == "" {
+	if pass, _, err := passwordFromKeychain(keychainLabel, "", ""); err != nil || pass == "" {
 		t.Fatalf("missing entry from the keychain: %s", keychainLabel)
 	}
 }

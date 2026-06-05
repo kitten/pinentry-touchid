@@ -6,6 +6,7 @@ package main
 #cgo LDFLAGS: -framework CoreFoundation -framework Security
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
+#include <libproc.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,7 +29,8 @@ static OSStatus pt_addBiometricItem(
     SecAccessControlRef access = SecAccessControlCreateWithFlags(
         kCFAllocatorDefault,
         kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-        kSecAccessControlBiometryAny,
+        // CurrentSet, not Any: enrolling a new fingerprint invalidates the item.
+        kSecAccessControlBiometryCurrentSet,
         &cfErr
     );
 
@@ -103,20 +105,26 @@ static OSStatus pt_deleteItem(
 // Returns the secret for the (service, account) data-protection item, triggering
 // Touch ID at SecItemCopyMatching time. Keyed on service+account (not label) so a
 // dual sign+auth key — same account, different labels — resolves to one item.
+// prompt is shown in the Touch ID dialog. *outLegacy is set when the item's marker
+// differs from the current one, so the caller can re-store it under today's ACL.
 // Caller must free(*outData).
 static OSStatus pt_readBiometricItem(
     const UInt8* serviceBytes, CFIndex serviceLen,
     const UInt8* accountBytes, CFIndex accountLen,
-    UInt8** outData, CFIndex* outLen
+    const UInt8* promptBytes, CFIndex promptLen,
+    const UInt8* markerBytes, CFIndex markerLen,
+    UInt8** outData, CFIndex* outLen, int* outLegacy
 ) {
-    *outData = NULL; *outLen = 0;
+    *outData = NULL; *outLen = 0; *outLegacy = 0;
     CFStringRef service = CFStringCreateWithBytes(NULL, serviceBytes, serviceLen, kCFStringEncodingUTF8, false);
     CFStringRef account = CFStringCreateWithBytes(NULL, accountBytes, accountLen, kCFStringEncodingUTF8, false);
+    CFStringRef prompt  = CFStringCreateWithBytes(NULL, promptBytes,  promptLen,  kCFStringEncodingUTF8, false);
+    CFStringRef marker  = CFStringCreateWithBytes(NULL, markerBytes,  markerLen,  kCFStringEncodingUTF8, false);
 
-    const void* keys[]   = { kSecClass, kSecAttrService, kSecAttrAccount, kSecMatchLimit, kSecReturnData, kSecUseDataProtectionKeychain };
-    const void* values[] = { kSecClassGenericPassword, service, account, kSecMatchLimitOne, kCFBooleanTrue, kCFBooleanTrue };
+    const void* keys[]   = { kSecClass, kSecAttrService, kSecAttrAccount, kSecMatchLimit, kSecReturnData, kSecReturnAttributes, kSecUseDataProtectionKeychain, kSecUseOperationPrompt };
+    const void* values[] = { kSecClassGenericPassword, service, account, kSecMatchLimitOne, kCFBooleanTrue, kCFBooleanTrue, kCFBooleanTrue, prompt };
     CFDictionaryRef query = CFDictionaryCreate(
-        kCFAllocatorDefault, keys, values, 6,
+        kCFAllocatorDefault, keys, values, 8,
         &kCFTypeDictionaryKeyCallBacks,
         &kCFTypeDictionaryValueCallBacks
     );
@@ -124,18 +132,30 @@ static OSStatus pt_readBiometricItem(
     CFTypeRef result = NULL;
     OSStatus status = SecItemCopyMatching(query, &result);
     if (status == errSecSuccess && result != NULL) {
-        CFDataRef data = (CFDataRef)result;
-        CFIndex len = CFDataGetLength(data);
-        UInt8* buf = (UInt8*)malloc(len);
-        if (buf != NULL) {
-            memcpy(buf, CFDataGetBytePtr(data), len);
-            *outData = buf;
-            *outLen = len;
+        CFDictionaryRef dict = (CFDictionaryRef)result;
+        CFDataRef data = (CFDataRef)CFDictionaryGetValue(dict, kSecValueData);
+        if (data != NULL) {
+            CFIndex len = CFDataGetLength(data);
+            UInt8* buf = (UInt8*)malloc(len);
+            if (buf != NULL) {
+                memcpy(buf, CFDataGetBytePtr(data), len);
+                *outData = buf;
+                *outLen = len;
+            }
+        }
+        CFStringRef desc = (CFStringRef)CFDictionaryGetValue(dict, kSecAttrDescription);
+        if (desc == NULL || !CFEqual(desc, marker)) {
+            *outLegacy = 1;
         }
     }
     if (result != NULL) CFRelease(result);
-    CFRelease(query); CFRelease(service); CFRelease(account);
+    CFRelease(query); CFRelease(service); CFRelease(account); CFRelease(prompt); CFRelease(marker);
     return status;
+}
+
+// proc_name (libproc) maps a PID to its command name via syscall, no subprocess.
+static int pt_processName(int pid, char* buf, int bufLen) {
+    return proc_name(pid, buf, (uint32_t)bufLen);
 }
 */
 import "C"
@@ -154,7 +174,7 @@ const (
 
 // Stored in kSecAttrDescription on biometric items so the read path can
 // tell them apart from legacy entries.
-const biometricDescriptionMarker = "pinentry-touchid-biometric-v1"
+const biometricDescriptionMarker = "pinentry-touchid-biometric-v2"
 
 var (
 	errKeychainDuplicate  = errors.New("keychain entry already exists")
@@ -201,25 +221,40 @@ func deleteKeychainItem(service, account string) error {
 }
 
 // readBiometricItem returns the secret for the (service, account) item,
-// prompting Touch ID. Returns errEmptyResults when no entry exists.
-func readBiometricItem(service, account string) ([]byte, error) {
+// prompting Touch ID with reason. legacy is true when the stored item predates
+// the current ACL marker. Returns errEmptyResults when no entry exists.
+func readBiometricItem(service, account, reason string) ([]byte, bool, error) {
 	servicePtr, serviceLen := bytesPtr([]byte(service))
 	accountPtr, accountLen := bytesPtr([]byte(account))
+	promptPtr, promptLen := bytesPtr([]byte(reason))
+	markerPtr, markerLen := bytesPtr([]byte(biometricDescriptionMarker))
 
 	var data *C.UInt8
 	var length C.CFIndex
-	status := C.pt_readBiometricItem(servicePtr, serviceLen, accountPtr, accountLen, &data, &length)
+	var legacy C.int
+	status := C.pt_readBiometricItem(servicePtr, serviceLen, accountPtr, accountLen,
+		promptPtr, promptLen, markerPtr, markerLen, &data, &length, &legacy)
 	if status == errSecItemNotFound {
-		return nil, errEmptyResults
+		return nil, false, errEmptyResults
 	}
 	if status != 0 {
-		return nil, fmt.Errorf("SecItemCopyMatching (read) failed with OSStatus %d", status)
+		return nil, false, fmt.Errorf("SecItemCopyMatching (read) failed with OSStatus %d", status)
 	}
 	if data == nil {
-		return nil, errEmptyResults
+		return nil, false, errEmptyResults
 	}
 	defer C.free(unsafe.Pointer(data))
-	return C.GoBytes(unsafe.Pointer(data), C.int(length)), nil
+	return C.GoBytes(unsafe.Pointer(data), C.int(length)), legacy != 0, nil
+}
+
+// processName returns the command name for pid, or "" if it can't be resolved.
+func processName(pid int) string {
+	buf := make([]byte, 64)
+	n := C.pt_processName(C.int(pid), (*C.char)(unsafe.Pointer(&buf[0])), C.int(len(buf)))
+	if n <= 0 {
+		return ""
+	}
+	return string(buf[:n])
 }
 
 // Handles the zero-length case where &b[0] would panic.

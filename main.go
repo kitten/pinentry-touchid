@@ -113,13 +113,28 @@ func WithLogger(logger *log.Logger) KeychainClient {
 	}
 }
 
-// passwordFromKeychain retrieves a password by (service, account) from the keychain.
-func passwordFromKeychain(service, account string) (string, error) {
-	data, err := readBiometricItem(service, account)
+// passwordFromKeychain retrieves a password by (service, account) from the
+// keychain, prompting Touch ID with reason. legacy is true for pre-CurrentSet items.
+func passwordFromKeychain(service, account, reason string) (string, bool, error) {
+	data, legacy, err := readBiometricItem(service, account, reason)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return string(data), nil
+	return string(data), legacy, nil
+}
+
+// invokingProcess resolves gpg-agent's OPTION owner ("PID/UID HOST") to the
+// requesting command name — ssh for auth, gpg for signing.
+func invokingProcess(owner string) string {
+	fields := strings.Fields(owner)
+	if len(fields) == 0 {
+		return ""
+	}
+	pid, err := strconv.Atoi(strings.SplitN(fields[0], "/", 2)[0])
+	if err != nil || pid <= 0 {
+		return ""
+	}
+	return processName(pid)
 }
 
 func storePasswordInKeychain(label, keyInfo string, pin []byte, logger *log.Logger) error {
@@ -259,14 +274,31 @@ func GetPIN(promptFn PromptFunc, logger *log.Logger) GetPinFunc {
 		// https://gist.github.com/mdeguzis/05d1f284f931223624834788da045c65#file-info-pinentry-L357-L362
 		keyInfo := strings.Split(s.KeyInfo, "/")[1]
 
+		reason := "Unlock GPG key"
+		if email != "" {
+			reason = "Unlock GPG key for " + email
+		}
+		if name == "ssh" {
+			reason = "Authorize SSH authentication"
+		}
+		if who := invokingProcess(s.Opts.Owner); who != "" {
+			reason += "\nRequested by " + who
+		}
+
 		// Single keychain op: the read triggers one Touch ID. A missing entry
 		// returns errEmptyResults *without* prompting, so there's no separate
 		// existence check to cause a second prompt.
 		fetchStart := time.Now()
-		password, err := passwordFromKeychain("GnuPG", keyInfo)
+		password, legacy, err := passwordFromKeychain("GnuPG", keyInfo, reason)
 		switch {
 		case err == nil:
 			logger.Printf("Password fetched from keychain after %s", time.Since(fetchStart))
+			// Re-store items written under the old (BiometryAny) ACL.
+			if legacy {
+				if err := storePasswordInKeychain(keychainLabel, keyInfo, []byte(password), logger); err != nil {
+					logger.Printf("ACL upgrade re-store failed: %s", err)
+				}
+			}
 			return password, nil
 		case err != errEmptyResults:
 			logger.Printf("Error fetching password from keychain after %s: %s", time.Since(fetchStart), err)

@@ -12,7 +12,7 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        version = "0.1.2";
+        version = "0.1.3";
         releaseApp = pkgs.writeShellApplication {
           name = "release";
           runtimeInputs = with pkgs; [ gh jq zip git ];
