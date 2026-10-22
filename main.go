@@ -484,7 +484,7 @@ func serveWithCustomHandlers(callbacks pinentry.Callbacks, greeting string) erro
 func main() {
 	flag.Parse()
 	// Diagnostics must remain available even in headless sessions.
-	if !*check && !*fixSymlink && !*selfTest && useTerminalPinentry(*terminal, sensor.HasGUIAccess(), os.Getenv) {
+	if !*check && !*fixSymlink && !*selfTest && (*terminal || !sensor.CurrentConsoleState().Usable()) {
 		if err := execTerminalPinentry(); err != nil {
 			fmt.Fprintf(os.Stderr, "Terminal pinentry: %v\n", err)
 			os.Exit(1)
@@ -513,32 +513,49 @@ func main() {
 	if *selfTest {
 		ok := true
 
-		// Check Touch ID
-		if sensor.IsTouchIDAvailable() {
-			fmt.Fprintf(os.Stdout, "Touch ID:    available\n")
+		console := sensor.CurrentConsoleState()
+		fmt.Fprintf(os.Stdout, "Console:    gui=%t on-console=%t unlocked=%t display-awake=%t\n", console.GUIAccess, console.OnConsole, console.Unlocked, console.DisplayAwake)
+		terminalMode := *terminal || !console.Usable()
+		if terminalMode {
+			fmt.Fprintln(os.Stdout, "Input:      terminal")
+			path, err := exec.LookPath("pinentry-curses")
+			if err != nil {
+				fmt.Fprintf(os.Stdout, "Terminal:   pinentry-curses (%v)\n", err)
+				ok = false
+			} else {
+				fmt.Fprintf(os.Stdout, "Terminal:   %s\n", path)
+			}
 		} else {
-			fmt.Fprintf(os.Stdout, "Touch ID:    unavailable\n")
-			ok = false
-		}
+			fmt.Fprintln(os.Stdout, "Input:      graphical")
 
-		// Check log file writability
-		logPath := filepath.Clean(DefaultLogLocation)
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-		if err != nil {
-			fmt.Fprintf(os.Stdout, "Log file:    %s (not writable: %v)\n", logPath, err)
-			ok = false
-		} else {
-			f.Close()
-			fmt.Fprintf(os.Stdout, "Log file:    %s (writable)\n", logPath)
-		}
+			// Check Touch ID
+			if sensor.IsTouchIDAvailable() {
+				fmt.Fprintf(os.Stdout, "Touch ID:    available\n")
+			} else {
+				fmt.Fprintf(os.Stdout, "Touch ID:    unavailable\n")
+				ok = false
+			}
 
-		// Check fallback pinentry binary
-		fallbackPath, err := validatePINBinary()
-		if err != nil {
-			fmt.Fprintf(os.Stdout, "Fallback:    %s (%v)\n", fallbackPath, err)
-			ok = false
-		} else {
-			fmt.Fprintf(os.Stdout, "Fallback:    %s\n", fallbackPath)
+			// Check log file writability
+			logPath := filepath.Clean(DefaultLogLocation)
+			f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+			if err != nil {
+				fmt.Fprintf(os.Stdout, "Log file:    %s (not writable: %v)\n", logPath, err)
+				ok = false
+			} else {
+				f.Close()
+				fmt.Fprintf(os.Stdout, "Log file:    %s (writable)\n", logPath)
+			}
+
+			// Check fallback pinentry binary
+			fallbackPath, err := validatePINBinary()
+			if err != nil {
+				fmt.Fprintf(os.Stdout, "Fallback:    %s (%v)\n", fallbackPath, err)
+				ok = false
+			} else {
+				fmt.Fprintf(os.Stdout, "Fallback:    %s\n", fallbackPath)
+			}
+
 		}
 
 		// Version

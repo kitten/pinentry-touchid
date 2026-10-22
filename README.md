@@ -54,17 +54,22 @@ Flow:
 
 ### Terminal fallback
 
-When the macOS security session has no graphical access, or `SSH_CONNECTION`
-or `SSH_TTY` is set, pinentry-touchid runs `pinentry-curses` directly, bypassing
-Touch ID and Keychain access. Install `pinentry-curses` on PATH; the Nix package
-includes it. The `-tty` flag forces this behavior. GnuPG must supply the current
-terminal (`export GPG_TTY=$(tty)` in interactive shells).
+Graphical authentication is preferred only when the current user's console
+session is active, unlocked, and has an awake display, and the process has
+graphical access. Otherwise pinentry-touchid runs `pinentry-curses` directly,
+bypassing Touch ID and Keychain access. SSH environment variables do not override
+an available console. The `-tty` flag always forces terminal input.
 
-Detection uses the pinentry process's session and environment. An agent started
-in a desktop session may retain that environment when reused over SSH; use a
-separate agent/session or explicitly configure `pinentry-touchid -tty` through
-a wrapper in that situation. Touch ID cancellation does not trigger another
-password prompt.
+Detection samples macOS state at startup, without waking the screen. It uses
+Core Graphics session/display APIs and the undocumented `IOConsoleLocked`
+IORegistry property (defined in Apple's XNU sources). Missing or unrecognized
+state selects terminal input. `-self-test` reports each signal and selected mode.
+A console can lock after the check; Touch ID cancellation does not trigger a
+second password prompt. An awake virtual display may also count as available.
+
+Install `pinentry-curses` on PATH; the Nix package includes it. GnuPG must supply
+a usable terminal (`export GPG_TTY=$(tty)` in interactive shells). Without a
+terminal, curses cannot provide an interactive prompt.
 
 The default Nix package downloads a signed release. Source changes become active
 there only after building/signing a new release and updating its version and hash.
