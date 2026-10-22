@@ -52,6 +52,23 @@ Flow:
 - **Biometric entry exists** — read triggers the Touch ID modal; on success the
   PIN is returned to `gpg-agent`.
 
+### Terminal fallback
+
+When the macOS security session has no graphical access, or `SSH_CONNECTION`
+or `SSH_TTY` is set, pinentry-touchid runs `pinentry-curses` directly, bypassing
+Touch ID and Keychain access. Install `pinentry-curses` on PATH; the Nix package
+includes it. The `-tty` flag forces this behavior. GnuPG must supply the current
+terminal (`export GPG_TTY=$(tty)` in interactive shells).
+
+Detection uses the pinentry process's session and environment. An agent started
+in a desktop session may retain that environment when reused over SSH; use a
+separate agent/session or explicitly configure `pinentry-touchid -tty` through
+a wrapper in that situation. Touch ID cancellation does not trigger another
+password prompt.
+
+The default Nix package downloads a signed release. Source changes become active
+there only after building/signing a new release and updating its version and hash.
+
 ### Codesigning
 
 `SecItemAdd` with `kSecAccessControlBiometryAny` returns

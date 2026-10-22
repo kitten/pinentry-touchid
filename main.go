@@ -58,6 +58,7 @@ var (
 
 	check      = flag.Bool("check", false, "Verify that pinentry-mac is present in the system.")
 	fixSymlink = flag.Bool("fix", false, "Set up pinentry-mac as the fallback PIN entry program.")
+	terminal   = flag.Bool("tty", false, "Use terminal pinentry instead of graphical authentication.")
 	selfTest   = flag.Bool("self-test", false, "Run startup diagnostics and report status.")
 	_          = flag.String("display", "", "Set the X display (unused)")
 )
@@ -482,7 +483,15 @@ func serveWithCustomHandlers(callbacks pinentry.Callbacks, greeting string) erro
 
 func main() {
 	flag.Parse()
-	if !sensor.IsTouchIDAvailable() {
+	// Diagnostics must remain available even in headless sessions.
+	if !*check && !*fixSymlink && !*selfTest && useTerminalPinentry(*terminal, sensor.HasGUIAccess(), os.Getenv) {
+		if err := execTerminalPinentry(); err != nil {
+			fmt.Fprintf(os.Stderr, "Terminal pinentry: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if !*check && !*fixSymlink && !*selfTest && !sensor.IsTouchIDAvailable() {
 		client, err := pinentry.LaunchCustom("pinentry-mac")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Pinentry Launch returned error: %v\n", err)

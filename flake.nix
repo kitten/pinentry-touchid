@@ -24,7 +24,7 @@
           default = prebuilt;
 
           # Pre-built variant (default): fetch the Developer ID-signed .app and
-          # wrap its inner binary with pinentry-mac on PATH. Enforced Touch ID
+          # wrap its inner binary with GUI and terminal pinentries on PATH. Enforced Touch ID
           # needs a signature the sandbox can't make — hence prebuilt vs unsigned.
           prebuilt = pkgs.stdenvNoCC.mkDerivation {
             pname = "pinentry-touchid";
@@ -52,7 +52,7 @@
               makeWrapper \
                 $out/Applications/pinentry-touchid.app/Contents/MacOS/pinentry-touchid \
                 $out/bin/pinentry-touchid \
-                --prefix PATH : ${pkgs.pinentry_mac}/bin
+                --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.pinentry_mac pkgs.pinentry-curses ]}
             '';
 
             meta = with pkgs.lib; {
