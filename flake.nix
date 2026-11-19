@@ -12,7 +12,7 @@
       system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
-        version = "0.1.6";
+        version = "0.1.7";
         releaseApp = pkgs.writeShellApplication {
           name = "release";
           runtimeInputs = with pkgs; [ gh jq zip git ];
@@ -32,7 +32,7 @@
 
             src = pkgs.fetchurl {
               url = "https://github.com/kitten/pinentry-touchid/releases/download/v${version}/pinentry-touchid-macos.zip";
-              hash = "sha256-XMHdUjr6em59RqL+SilSI4E0p9JdmK0rTGsU/MyDi7Y=";
+              hash = "sha256-pTMUX4nkqHmRwVF8Tg5dQ9yZd4gUdaPSZh/B9lCPLgY=";
             };
 
             nativeBuildInputs = [
