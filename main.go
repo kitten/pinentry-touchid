@@ -484,7 +484,7 @@ func serveWithCustomHandlers(callbacks pinentry.Callbacks, greeting string) erro
 func main() {
 	flag.Parse()
 	// Diagnostics must remain available even in headless sessions.
-	if !*check && !*fixSymlink && !*selfTest && (*terminal || !sensor.CurrentConsoleState().Usable()) {
+	if !*check && !*fixSymlink && !*selfTest && terminalReason(*terminal, sensor.CurrentConsoleState(), os.Getenv) != "" {
 		if err := execTerminalPinentry(); err != nil {
 			fmt.Fprintf(os.Stderr, "Terminal pinentry: %v\n", err)
 			os.Exit(1)
@@ -515,9 +515,10 @@ func main() {
 
 		console := sensor.CurrentConsoleState()
 		fmt.Fprintf(os.Stdout, "Console:    gui=%t on-console=%t unlocked=%t display-awake=%t\n", console.GUIAccess, console.OnConsole, console.Unlocked, console.DisplayAwake)
-		terminalMode := *terminal || !console.Usable()
-		if terminalMode {
+		reason := terminalReason(*terminal, console, os.Getenv)
+		if reason != "" {
 			fmt.Fprintln(os.Stdout, "Input:      terminal")
+			fmt.Fprintf(os.Stdout, "Reason:     %s\n", reason)
 			path, err := exec.LookPath("pinentry-curses")
 			if err != nil {
 				fmt.Fprintf(os.Stdout, "Terminal:   pinentry-curses (%v)\n", err)

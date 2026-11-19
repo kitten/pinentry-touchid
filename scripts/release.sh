@@ -2,8 +2,8 @@
 # Developer ID-sign the flake's `unsigned` .app and publish it. Local signing,
 # no CI/secrets.   nix run .#release -- X.Y.Z   (DRYRUN=1 to skip publishing)
 #
-# No hardened runtime: the cgo binary links nix-store dylibs that library
-# validation would reject. The profile is embedded, so it must stay a bundle.
+# The unsigned build links only system libraries. The embedded provisioning
+# profile must stay inside the bundle.
 # No notarization: nix fetches into /nix/store unquarantined.
 set -euo pipefail
 
@@ -49,9 +49,11 @@ rm -rf "$APP"; mkdir -p "$ROOT/dist"
 cp -R "$ROOT/dist/result/Applications/pinentry-touchid.app" "$APP"
 chmod -R u+w "$APP"
 
-# Developer ID sign (NOT hardened runtime — see header).
+# Developer ID sign after the build has finalized library paths.
 codesign --force --timestamp --entitlements "$ENT" -s "$ID_HASH" "$APP"
-codesign -vv --strict "$APP"
+codesign --verify --deep --strict --verbose=2 "$APP"
+# Verify the signed executable launches without accessing a GUI or credentials.
+"$APP/Contents/MacOS/pinentry-touchid" -h >/dev/null 2>&1
 
 ( cd "$ROOT/dist" && zip -qry pinentry-touchid-macos.zip pinentry-touchid.app )
 

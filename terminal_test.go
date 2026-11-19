@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jorgelbg/pinentry-touchid/sensor"
 )
 
 // A subprocess is required because successful fallback replaces this process.
@@ -80,6 +82,37 @@ func TestTerminalSelfTest(t *testing.T) {
 				if strings.Contains(string(out), unwanted) {
 					t.Fatalf("terminal self-test checked GUI dependency: %s", out)
 				}
+			}
+		})
+	}
+}
+
+func TestTerminalReason(t *testing.T) {
+	awake := sensor.ConsoleState{GUIAccess: true, OnConsole: true, Unlocked: true, DisplayAwake: true}
+	for _, tc := range []struct {
+		name  string
+		force bool
+		state sensor.ConsoleState
+		env   map[string]string
+		want  string
+	}{
+		{"local", false, awake, nil, ""},
+		{"local Rex retains graphical input", false, awake, map[string]string{"REX_SESSION": "session:local", "REX_BLOCK": "block:local", "REX_SERVER": "unix:///tmp/rex.sock"}, ""},
+		{"forced", true, awake, nil, "-tty"},
+		{"remote unlocked screen sharing", false, awake, map[string]string{"SSH_CONNECTION": "remote"}, "SSH_CONNECTION indicates remote session"},
+		{"remote client", false, awake, map[string]string{"SSH_CLIENT": "remote"}, "SSH_CLIENT indicates remote session"},
+		{"remote tty", false, awake, map[string]string{"SSH_TTY": "/dev/ttys001"}, "SSH_TTY indicates remote session"},
+		{"agent request override", false, awake, map[string]string{"PINENTRY_USER_DATA": "pinentry-touchid:tty"}, "PINENTRY_USER_DATA requests terminal"},
+		{"unrelated user data", false, awake, map[string]string{"PINENTRY_USER_DATA": "other"}, ""},
+		{"locked", false, sensor.ConsoleState{GUIAccess: true, OnConsole: true, DisplayAwake: true}, nil, "console locked or lock state unknown"},
+		{"asleep", false, sensor.ConsoleState{GUIAccess: true, OnConsole: true, Unlocked: true}, nil, "display asleep or display state unknown"},
+		{"inactive", false, sensor.ConsoleState{GUIAccess: true, Unlocked: true, DisplayAwake: true}, nil, "no active console session"},
+		{"unknown", false, sensor.ConsoleState{}, nil, "no graphical access"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := terminalReason(tc.force, tc.state, func(k string) string { return tc.env[k] })
+			if got != tc.want {
+				t.Fatalf("reason = %q, want %q", got, tc.want)
 			}
 		})
 	}

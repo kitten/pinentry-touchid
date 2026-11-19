@@ -57,15 +57,28 @@ Flow:
 Graphical authentication is preferred only when the current user's console
 session is active, unlocked, and has an awake display, and the process has
 graphical access. Otherwise pinentry-touchid runs `pinentry-curses` directly,
-bypassing Touch ID and Keychain access. SSH environment variables do not override
-an available console. The `-tty` flag always forces terminal input.
+bypassing Touch ID and Keychain access. Nonempty `SSH_CONNECTION`, `SSH_CLIENT`,
+or `SSH_TTY` selects terminal input even when Screen Sharing keeps the console
+unlocked. The `-tty` flag always forces terminal input. `-self-test` prints the
+selection reason without logging environment values.
+
+These SSH markers must reach the pinentry process. A shared `gpg-agent` does not
+reliably receive the requesting shell's SSH environment. For GPG requests,
+`PINENTRY_USER_DATA=pinentry-touchid:tty` explicitly selects terminal input via
+GnuPG's supported per-request environment forwarding. SSH-agent requests do not
+carry the caller's terminal or environment; their routing still depends on the
+agent's startup environment. Updating that environment affects other sessions,
+so a shared agent cannot reliably distinguish simultaneous local and remote SSH
+clients. Do not treat an unlocked console as proof that a request is local.
 
 Detection samples macOS state at startup, without waking the screen. It uses
 Core Graphics session/display APIs and the undocumented `IOConsoleLocked`
 IORegistry property (defined in Apple's XNU sources). Missing or unrecognized
 state selects terminal input. `-self-test` reports each signal and selected mode.
 A console can lock after the check; Touch ID cancellation does not trigger a
-second password prompt. An awake virtual display may also count as available.
+second password prompt. The Apple headless virtual display (vendor `unkn`, model `virt`) is excluded
+from awake-display detection. Other virtual-display drivers may still count as
+available; this is not a universal physical-display detector.
 
 Install `pinentry-curses` on PATH; the Nix package includes it. GnuPG must supply
 a usable terminal (`export GPG_TTY=$(tty)` in interactive shells). Without a

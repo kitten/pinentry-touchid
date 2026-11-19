@@ -92,9 +92,37 @@
               app=$out/Applications/pinentry-touchid.app
               mkdir -p $app/Contents/MacOS
               mv $out/bin/pinentry-touchid $app/Contents/MacOS/pinentry-touchid
+
+              # The release zip cannot retain a Nix closure. Use macOS's resolver
+              # before fixup/signing, rather than the build machine's store path.
+              binary=$app/Contents/MacOS/pinentry-touchid
+              dependencies=$(otool -L "$binary")
+              while IFS= read -r dependency; do
+                case "$dependency" in
+                  /nix/store/*-libresolv-*/lib/libresolv.9.dylib)
+                    install_name_tool -change "$dependency" /usr/lib/libresolv.9.dylib "$binary"
+                    ;;
+                esac
+              done < <(printf '%s\n' "$dependencies" | tail -n +2 | awk '{print $1}')
               rmdir $out/bin || true
               install -m444 ${./assets/Info.plist} $app/Contents/Info.plist
               install -m444 ${./assets/pinentry-touchid.provisionprofile} $app/Contents/embedded.provisionprofile
+            '';
+
+            doInstallCheck = true;
+            installCheckPhase = ''
+              runHook preInstallCheck
+              binary=$out/Applications/pinentry-touchid.app/Contents/MacOS/pinentry-touchid
+              dependencies=$(otool -L "$binary")
+              while IFS= read -r dependency; do
+                case "$dependency" in
+                  /System/Library/* | /usr/lib/*) ;;
+                  *) echo "Non-system release dependency: $dependency" >&2; exit 1 ;;
+                esac
+              done < <(printf '%s\n' "$dependencies" | tail -n +2 | awk '{print $1}')
+              # Flag parsing exercises dyld without accessing a GUI or credentials.
+              "$binary" -h
+              runHook postInstallCheck
             '';
 
             meta = with pkgs.lib; {
