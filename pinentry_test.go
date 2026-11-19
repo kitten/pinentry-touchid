@@ -126,6 +126,125 @@ func TestEntryNotInKeychain(t *testing.T) {
 	}
 }
 
+func TestConfirmShowsDialogWithoutPIN(t *testing.T) {
+	promptCalled := false
+	var gotCmd, gotDesc string
+	c := KeychainClient{
+		logger: log.New(io.Discard, "", 0),
+		promptFn: func(pinentry.Settings) ([]byte, error) {
+			promptCalled = true
+			return nil, nil
+		},
+		dialogFn: func(cmd string, s pinentry.Settings) *common.Error {
+			gotCmd, gotDesc = cmd, s.Desc
+			return nil
+		},
+	}
+
+	ok, err := c.Confirm(pinentry.Settings{Desc: "Please insert the card"})
+	if err != nil || !ok {
+		t.Fatalf("Confirm should succeed, got ok=%v err=%v", ok, err)
+	}
+	if promptCalled {
+		t.Fatal("Confirm must not ask for a PIN")
+	}
+	if gotCmd != "CONFIRM" || gotDesc != "Please insert the card" {
+		t.Fatalf("unexpected dialog: cmd=%q desc=%q", gotCmd, gotDesc)
+	}
+}
+
+func TestConfirmPassesErrorThrough(t *testing.T) {
+	want := &common.Error{Src: common.ErrSrcPinentry, Code: common.ErrCanceled, SrcName: "pinentry", Message: "canceled"}
+	c := KeychainClient{
+		logger:   log.New(io.Discard, "", 0),
+		dialogFn: func(string, pinentry.Settings) *common.Error { return want },
+	}
+
+	ok, err := c.Confirm(pinentry.Settings{})
+	if ok || err != want {
+		t.Fatalf("got ok=%v err=%v, want false and %v", ok, err, want)
+	}
+}
+
+func TestMsgShowsMessage(t *testing.T) {
+	var gotCmd string
+	c := KeychainClient{
+		logger: log.New(io.Discard, "", 0),
+		dialogFn: func(cmd string, _ pinentry.Settings) *common.Error {
+			gotCmd = cmd
+			return nil
+		},
+	}
+
+	if err := c.Msg(pinentry.Settings{}); err != nil {
+		t.Fatalf("Msg should succeed: %v", err)
+	}
+	if gotCmd != "MESSAGE" {
+		t.Fatalf("got %q, want MESSAGE", gotCmd)
+	}
+}
+
+// fakePinentry puts a fake gpgconf and pinentry on PATH. The pinentry logs
+// every command and answers ERR to the commands listed in fail.
+func fakePinentry(t *testing.T, fail string) string {
+	t.Helper()
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "commands.log")
+	scripts := map[string]string{
+		"gpgconf": "#!/bin/sh\necho 'pinentry:Passphrase Entry:" + filepath.Join(dir, "pinentry") + "'\n",
+		"pinentry": "#!/bin/sh\necho 'OK hi'\n" +
+			"while IFS= read -r l; do printf '%s\\n' \"$l\" >> '" + logPath + "'\n" +
+			"case \"${l%% *}\" in " + fail + ") echo 'ERR 83886179 Operation cancelled <Pinentry>';;\n" +
+			"BYE) echo OK; exit 0;; *) echo OK;; esac; done\n",
+	}
+	for name, body := range scripts {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldPath := os.Getenv("PATH")
+	os.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
+	t.Cleanup(func() { os.Setenv("PATH", oldPath) })
+	return logPath
+}
+
+func TestPinentryDialogSendsConfirm(t *testing.T) {
+	logPath := fakePinentry(t, "NONE")
+
+	err := pinentryDialog("CONFIRM", pinentry.Settings{Desc: "Please insert the card", OkBtn: "_OK", Timeout: 30})
+	if err != nil {
+		t.Fatalf("pinentryDialog should succeed: %v", err)
+	}
+
+	got, rerr := os.ReadFile(logPath)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	cmds := string(got)
+	for _, want := range []string{"SETDESC Please insert the card\n", "SETOK _OK\n", "SETTIMEOUT 30\n", "CONFIRM\n"} {
+		if !strings.Contains(cmds, want) {
+			t.Errorf("missing %q in:\n%s", want, cmds)
+		}
+	}
+	for _, unwanted := range []string{"GETPIN", "SETREPEAT", "SETNOTOK"} {
+		if strings.Contains(cmds, unwanted) {
+			t.Errorf("unexpected %q in:\n%s", unwanted, cmds)
+		}
+	}
+}
+
+func TestPinentryDialogKeepsPinentryError(t *testing.T) {
+	fakePinentry(t, "CONFIRM")
+
+	err := pinentryDialog("CONFIRM", pinentry.Settings{Desc: "x"})
+	if err == nil {
+		t.Fatal("pinentryDialog should fail when pinentry cancels")
+	}
+	if err.Code != common.ErrCanceled {
+		t.Fatalf("got code %d, want %d", err.Code, common.ErrCanceled)
+	}
+}
+
 // Removes a matching entry from the "main" keychain.
 // Since the item gets added in the same process, i.e temporal build while executing the test, it
 // shouldn't request the password from the user.

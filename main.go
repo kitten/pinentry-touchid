@@ -36,6 +36,9 @@ type PromptFunc func(pinentry.Settings) ([]byte, error)
 // GetPinFunc is a function that executes the process for getting a password from the Keychain
 type GetPinFunc func(pinentry.Settings) (string, *common.Error)
 
+// DialogFunc shows a button-only dialog for an Assuan CONFIRM or MESSAGE command
+type DialogFunc func(cmd string, s pinentry.Settings) *common.Error
+
 const (
 	// DefaultLogFilename default name for the log files
 	DefaultLogFilename = "pinentry-touchid.log"
@@ -73,6 +76,7 @@ const (
 type KeychainClient struct {
 	logger   *log.Logger
 	promptFn PromptFunc
+	dialogFn DialogFunc
 }
 
 // New returns a new instance of KeychainClient with a configured logger and
@@ -103,6 +107,7 @@ func New() KeychainClient {
 	return KeychainClient{
 		logger:   logger,
 		promptFn: passwordPrompt,
+		dialogFn: pinentryDialog,
 	}
 }
 
@@ -111,6 +116,7 @@ func WithLogger(logger *log.Logger) KeychainClient {
 	return KeychainClient{
 		logger:   logger,
 		promptFn: passwordPrompt,
+		dialogFn: pinentryDialog,
 	}
 }
 
@@ -184,6 +190,52 @@ func passwordPrompt(s pinentry.Settings) ([]byte, error) {
 	return p.GetPin()
 }
 
+// pinentryDialog forwards a CONFIRM or MESSAGE to the fallback pinentry, so it
+// shows buttons only instead of a PIN field.
+func pinentryDialog(cmd string, s pinentry.Settings) *common.Error {
+	c, err := pinentry.LaunchCustom(pinentryBinary.GetBinary())
+	if err != nil {
+		return assuanError(fmt.Errorf("failed to start %q: %w", pinentryBinary.GetBinary(), err))
+	}
+	defer c.Shutdown()
+
+	for _, kv := range [][2]string{
+		{"SETTITLE", s.Title},
+		{"SETDESC", s.Desc},
+		{"SETOK", s.OkBtn},
+		{"SETNOTOK", s.NotOkBtn},
+		{"SETCANCEL", s.CancelBtn},
+	} {
+		if kv[1] == "" {
+			continue
+		}
+		if _, err := c.Session.SimpleCmd(kv[0], kv[1]); err != nil {
+			return pinentryError(err)
+		}
+	}
+	// Settings.Timeout holds the raw SETTIMEOUT value in seconds.
+	if s.Timeout > 0 {
+		if _, err := c.Session.SimpleCmd("SETTIMEOUT", strconv.FormatInt(int64(s.Timeout), 10)); err != nil {
+			return pinentryError(err)
+		}
+	}
+
+	if _, err := c.Session.SimpleCmd(cmd, ""); err != nil {
+		return pinentryError(err)
+	}
+	return nil
+}
+
+// pinentryError keeps the code pinentry returned, so gpg-agent can tell
+// cancel from "not confirmed".
+func pinentryError(err error) *common.Error {
+	var e common.Error
+	if errors.As(err, &e) {
+		return &e
+	}
+	return assuanError(err)
+}
+
 func assuanError(err error) *common.Error {
 	return &common.Error{
 		Src:     common.ErrSrcPinentry,
@@ -209,22 +261,22 @@ func (c KeychainClient) GetPIN(s pinentry.Settings) (string, *common.Error) {
 	return string(pin), nil
 }
 
-// Confirm Asks for confirmation, not implemented.
+// Confirm asks the user to confirm with OK or Cancel, without a PIN field.
 func (c KeychainClient) Confirm(s pinentry.Settings) (bool, *common.Error) {
 	c.logger.Println("Confirm was called!")
 
-	if _, err := c.promptFn(s); err != nil {
-		return false, assuanError(err)
+	if err := c.dialogFn("CONFIRM", s); err != nil {
+		return false, err
 	}
 
 	return true, nil
 }
 
-// Msg shows a message, not implemented.
-func (c KeychainClient) Msg(pinentry.Settings) *common.Error {
+// Msg shows a message with an OK button.
+func (c KeychainClient) Msg(s pinentry.Settings) *common.Error {
 	c.logger.Println("Msg was called!")
 
-	return nil
+	return c.dialogFn("MESSAGE", s)
 }
 
 // GetPIN executes the main logic for returning a password/pin back to the gpg-agent
